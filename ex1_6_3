@@ -1,4 +1,4 @@
-module ex1.6.3(a,b,and1,or1,xor1,nor1,nand1);
+module ex1_6_3(a,b,and1,or1,xor1,nor1,nand1);
 input a,b;
 output and1,or1,xor1,nor1,nand1;
 wire and1,or1,xor1,nor1,nand1;
