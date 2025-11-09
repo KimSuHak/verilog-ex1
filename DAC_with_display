@@ -1,0 +1,69 @@
+module DAC_with_display(
+    input clk,
+    input rst,
+    input [5:0] btn,
+    input add_sel,
+    output reg dac_csn, dac_ldacn, dac_wrn, dac_a_b,
+    output reg [7:0] dac_d,
+    output [7:0] seg_data,
+    output [3:0] seg_sel,
+    output [7:0] LCD_DATA,
+    output LCD_RS, LCD_RW, LCD_E
+);
+
+wire [7:0] led_out;
+wire [7:0] dac_d_temp;
+wire [5:0] btn_t;
+
+// ─────────────────────────────
+// 1) DAC 본체
+// ─────────────────────────────
+DAC core (
+    .clk(clk), .rst(rst),
+    .btn(btn), .add_sel(add_sel),
+    .dac_csn(dac_csn), .dac_ldacn(dac_ldacn),
+    .dac_wrn(dac_wrn), .dac_a_b(dac_a_b),
+    .dac_d(dac_d), .led_out(led_out)
+);
+
+// ─────────────────────────────
+// 2) Binary → BCD 변환 (for 7-seg, LCD)
+// ─────────────────────────────
+wire [3:0] bcd_h, bcd_t, bcd_o;
+
+bin2bcd_8bit b2b (
+    .bin(led_out),
+    .hundreds(bcd_h),
+    .tens(bcd_t),
+    .ones(bcd_o)
+);
+
+// ─────────────────────────────
+// 3) 7-Segment 출력
+// ─────────────────────────────
+seg_3digit seg_display (
+    .clk(clk),
+    .rst(rst),
+    .hundreds(bcd_h),
+    .tens(bcd_t),
+    .ones(bcd_o),
+    .seg_data(seg_data),
+    .seg_sel(seg_sel)
+);
+
+// ─────────────────────────────
+// 4) LCD 표시 ("DAC: XXX")
+// ─────────────────────────────
+LCD_display lcd_show (
+    .clk(clk),
+    .rst(rst),
+    .bcd_h(bcd_h),
+    .bcd_t(bcd_t),
+    .bcd_o(bcd_o),
+    .LCD_DATA(LCD_DATA),
+    .LCD_RS(LCD_RS),
+    .LCD_RW(LCD_RW),
+    .LCD_E(LCD_E)
+);
+
+endmodule
