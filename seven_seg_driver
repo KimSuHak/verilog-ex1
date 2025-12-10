@@ -1,0 +1,135 @@
+module seven_seg_driver (
+    input wire clk,           
+    input wire reset,         
+    // Time Data
+    input wire [3:0] H_10,    
+    input wire [3:0] H_01,    
+    input wire [3:0] M_10,    
+    input wire [3:0] M_01,    
+    input wire [3:0] S_10,    
+    input wire [3:0] S_01,    
+    input wire is_pm,         
+    input wire time_mode,     
+
+    output reg [7:0] seg_anode, 
+    output reg [7:0] seg_data   
+);
+    
+    parameter CLK_FREQ = 50_000_000;
+
+    // Segment Patterns (Active High)
+    // [dp, g, f, e, d, c, b, a]
+    parameter D_0 = 8'b00111111; 
+    parameter D_1 = 8'b00000110; 
+    parameter D_2 = 8'b01011011; 
+    parameter D_3 = 8'b01001111; 
+    parameter D_4 = 8'b01100110; 
+    parameter D_5 = 8'b01101101; 
+    parameter D_6 = 8'b01111101; 
+    parameter D_7 = 8'b00000111; 
+    parameter D_8 = 8'b01111111; 
+    parameter D_9 = 8'b01101111; 
+    
+    parameter S_BLANK = 8'b00000000; 
+    parameter S_P     = 8'b01110011; // P
+    parameter S_A     = 8'b01110111; // A
+    parameter S_M     = 8'b01010101; // M
+
+    // BCD Decoder Function
+    function [7:0] decode_bcd;
+        input [3:0] bcd_in;
+        case (bcd_in)
+            4'd0: decode_bcd = D_0;
+            4'd1: decode_bcd = D_1;
+            4'd2: decode_bcd = D_2;
+            4'd3: decode_bcd = D_3;
+            4'd4: decode_bcd = D_4;
+            4'd5: decode_bcd = D_5;
+            4'd6: decode_bcd = D_6;
+            4'd7: decode_bcd = D_7;
+            4'd8: decode_bcd = D_8;
+            4'd9: decode_bcd = D_9;
+            default: decode_bcd = S_BLANK;
+        endcase
+    endfunction
+
+    // Multiplexing Logic
+    parameter MUX_CLK_FREQ = 5000; 
+    parameter MUX_DIV_COUNT = CLK_FREQ / MUX_CLK_FREQ; 
+
+    reg [15:0] mux_counter;
+    reg [2:0] current_digit; 
+
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            mux_counter <= 0;
+            current_digit <= 0;
+        end else begin
+            if (mux_counter == MUX_DIV_COUNT - 1) begin
+                mux_counter <= 0;
+                current_digit <= (current_digit == 7) ? 3'd0 : current_digit + 1; 
+            end else begin
+                mux_counter <= mux_counter + 1;
+            end
+        end
+    end
+
+    // Data Selection & Output Logic
+    reg [3:0] bcd_in_mux;
+    reg [7:0] seg_data_raw;
+
+    // 1. Select Digit Data
+    always @(*) begin
+        bcd_in_mux = 4'd10; 
+
+        case (current_digit)
+            3'd7: bcd_in_mux = H_10; 
+            3'd6: bcd_in_mux = H_01; 
+            3'd5: bcd_in_mux = M_10; 
+            3'd4: bcd_in_mux = M_01; 
+            3'd3: bcd_in_mux = S_10; 
+            3'd2: bcd_in_mux = S_01; 
+
+            3'd1: begin
+                if (time_mode) bcd_in_mux = 4'd10; 
+                else bcd_in_mux = 4'd11; 
+            end
+            3'd0: begin
+                if (time_mode) bcd_in_mux = 4'd10; 
+                else bcd_in_mux = 4'd13; 
+            end
+            default: bcd_in_mux = 4'd10; 
+        endcase
+    end
+
+    // 2. Decode & Dot Point
+    always @(*) begin
+        if (bcd_in_mux <= 4'd9) begin
+            seg_data_raw = decode_bcd(bcd_in_mux);
+        end else if (~time_mode && current_digit == 3'd1) begin
+             seg_data_raw = is_pm ? S_P : S_A;
+        end else if (~time_mode && current_digit == 3'd0) begin
+             seg_data_raw = S_M;
+        end else begin
+            seg_data_raw = S_BLANK;
+        end
+        
+        // Add Colon (DP) at specific positions
+        if (current_digit == 3'd6 || current_digit == 3'd4) begin
+            seg_data = seg_data_raw | 8'h80; 
+        end else begin
+            seg_data = seg_data_raw; 
+        end
+    end
+
+    // Anode Control
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            seg_anode <= 8'b11111111; 
+        end else begin 
+            seg_anode <= 8'b11111111;
+            seg_anode[current_digit] <= 1'b0;
+        end
+    end 
+
+endmodule
