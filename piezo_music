@@ -1,0 +1,108 @@
+module piezo_music_driver (
+    input wire clk,           
+    input wire reset,
+    input wire alarm_on,      
+    output reg piezo_out      
+);
+
+    parameter CLK_FREQ = 50_000_000;
+
+    // Note Frequencies (Counter Limit = CLK_FREQ / Freq / 2)
+    parameter C4  = 95556;  // Do (261.6 Hz)
+    parameter D4  = 85131;  // Re (293.6 Hz)
+    parameter E4  = 75843;  // Mi (329.6 Hz)
+    parameter F4  = 71586;  // Fa (349.2 Hz)
+    parameter G4  = 63776;  // Sol (392.0 Hz)
+    parameter A4  = 56818;  // La (440.0 Hz)
+    parameter B4  = 50619;  // Si (493.8 Hz)
+    parameter C5  = 47778;  // Do High (523.2 Hz)
+    
+    parameter G3  = 127551; // Sol Low (196.0 Hz)
+    parameter A3  = 113636; // La Low (220.0 Hz)
+    parameter B3  = 101238; // Si Low (246.9 Hz)
+    parameter REST = 0;     
+
+    // Song Sequencer
+    reg [5:0] note_index;   
+    reg [24:0] duration_cnt; 
+    parameter NOTE_DURATION = 12_500_000; // 0.25s
+
+    reg [19:0] tone_limit;  
+    reg [19:0] tone_cnt;    
+
+    // Song Data (Happy Birthday)
+    always @(*) begin
+        case (note_index)
+            6'd0:  tone_limit = G3;   
+            6'd1:  tone_limit = G3;   
+            6'd2:  tone_limit = A3;   
+            6'd3:  tone_limit = G3;   
+            6'd4:  tone_limit = C4;   
+            6'd5:  tone_limit = B3;   
+            6'd6:  tone_limit = REST; 
+            
+            6'd7:  tone_limit = G3;   
+            6'd8:  tone_limit = G3;   
+            6'd9:  tone_limit = A3;   
+            6'd10: tone_limit = G3;   
+            6'd11: tone_limit = D4;   
+            6'd12: tone_limit = C4;   
+            6'd13: tone_limit = REST; 
+
+            6'd14: tone_limit = G3;   
+            6'd15: tone_limit = G3;   
+            6'd16: tone_limit = G4;   
+            6'd17: tone_limit = E4;   
+            6'd18: tone_limit = C4;   
+            6'd19: tone_limit = B3;   
+            6'd20: tone_limit = A3;   
+            6'd21: tone_limit = REST; 
+
+            6'd22: tone_limit = F4;   
+            6'd23: tone_limit = F4;   
+            6'd24: tone_limit = E4;   
+            6'd25: tone_limit = C4;   
+            6'd26: tone_limit = D4;   
+            6'd27: tone_limit = C4;   
+            
+            default: tone_limit = REST;
+        endcase
+    end
+
+    // 1. Note Duration Control
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            duration_cnt <= 0;
+            note_index <= 0;
+        end else if (alarm_on) begin
+            if (duration_cnt >= NOTE_DURATION) begin
+                duration_cnt <= 0;
+                if (note_index == 27) note_index <= 0; 
+                else note_index <= note_index + 1;
+            end else begin
+                duration_cnt <= duration_cnt + 1;
+            end
+        end else begin
+            duration_cnt <= 0;
+            note_index <= 0; 
+        end
+    end
+
+    // 2. Frequency Generation
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            tone_cnt <= 0;
+            piezo_out <= 0;
+        end else if (alarm_on && tone_limit != REST) begin
+            if (tone_cnt >= tone_limit) begin
+                tone_cnt <= 0;
+                piezo_out <= ~piezo_out; 
+            end else begin
+                tone_cnt <= tone_cnt + 1;
+            end
+        end else begin
+            piezo_out <= 0; 
+        end
+    end
+
+endmodule
