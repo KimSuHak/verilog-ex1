@@ -1,0 +1,284 @@
+module clock_module (
+    input wire clk, reset,
+    input wire inc_btn, dec_btn,
+    input wire set_mode,      
+    input wire time_mode,     
+    input wire btn_usa, btn_uk, btn_russia,
+    
+    input wire alarm_set_sw,  
+    input wire stopwatch_sw,  
+
+    output reg [3:0] H_10, H_01, M_10, M_01, S_10, S_01,
+    output reg is_pm,
+    output reg alarm_ringing
+);
+
+    parameter CLK_FREQ = 50_000_000;
+    
+    // 1Hz Logic
+    parameter CLK_DIV_COUNT = CLK_FREQ / 2; 
+    reg [25:0] clk_div_counter;
+    reg clk_1hz_toggle, clk_1hz_sync;
+    
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin 
+            clk_div_counter <= 0; 
+            clk_1hz_toggle <= 0; 
+        end else begin
+            if (clk_div_counter == CLK_DIV_COUNT - 1) begin
+                clk_div_counter <= 0; 
+                clk_1hz_toggle <= ~clk_1hz_toggle;
+            end else begin
+                clk_div_counter <= clk_div_counter + 1;
+            end
+        end
+    end
+    
+    always @(posedge clk) clk_1hz_sync <= clk_1hz_toggle;
+    wire tick_1hz = clk_1hz_toggle & (~clk_1hz_sync);
+
+    // 100Hz Logic (Stopwatch)
+    parameter SW_DIV_COUNT = 500_000; 
+    reg [18:0] sw_clk_counter;
+    reg tick_100hz;
+    
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin 
+            sw_clk_counter <= 0; 
+            tick_100hz <= 0; 
+        end else begin
+            if (sw_clk_counter == SW_DIV_COUNT - 1) begin
+                sw_clk_counter <= 0; 
+                tick_100hz <= 1;
+            end else begin
+                sw_clk_counter <= sw_clk_counter + 1; 
+                tick_100hz <= 0;
+            end
+        end
+    end
+
+    // Button Debounce & Edge Detect
+    reg [1:0] inc_sync, dec_sync;
+    reg inc_prev, dec_prev;
+    
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin 
+            inc_sync<=0; dec_sync<=0; 
+            inc_prev<=0; dec_prev<=0; 
+        end else begin
+            inc_sync <= {inc_sync[0], inc_btn}; 
+            dec_sync <= {dec_sync[0], dec_btn};
+            inc_prev <= inc_sync[1]; 
+            dec_prev <= dec_sync[1];
+        end
+    end
+    
+    wire inc_edge = inc_sync[1] & (~inc_prev);
+    wire dec_edge = dec_sync[1] & (~dec_prev);
+
+    // LFSR (Random Number for Math)
+    reg [7:0] lfsr;
+    always @(posedge clk or posedge reset) begin
+        if (reset) lfsr <= 8'hA5; 
+        else lfsr <= {lfsr[6:0], lfsr[7] ^ lfsr[5] ^ lfsr[4] ^ lfsr[3]}; 
+    end
+
+    // Registers
+    reg [4:0] H_24; reg [5:0] M; reg [5:0] S;
+    reg [4:0] ALARM_H; reg [5:0] ALARM_M; 
+    reg minute_changed_pulse;
+    
+    reg [3:0] math_A, math_B; 
+    reg [4:0] user_answer;
+    
+    reg [6:0] sw_min; 
+    reg [5:0] sw_sec; 
+    reg [6:0] sw_cs;  
+    reg sw_run;       
+    reg sw_lap;       
+    reg [6:0] lap_min; reg [5:0] lap_sec; reg [6:0] lap_cs; 
+
+    // Main Control Logic
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            H_24<=0; M<=0; S<=0; 
+            ALARM_H<=12; ALARM_M<=0;
+            alarm_ringing<=0; minute_changed_pulse<=0;
+            math_A<=0; math_B<=0; user_answer<=0;
+            sw_min<=0; sw_sec<=0; sw_cs<=0; sw_run<=0; sw_lap<=0;
+            lap_min<=0; lap_sec<=0; lap_cs<=0;
+        end else begin
+            minute_changed_pulse <= 0;
+
+            // Stopwatch Counting
+            if (sw_run && tick_100hz) begin
+                if (sw_cs == 99) begin
+                    sw_cs <= 0;
+                    if (sw_sec == 59) begin
+                        sw_sec <= 0;
+                        if (sw_min == 99) sw_min <= 0;
+                        else sw_min <= sw_min + 1;
+                    end else sw_sec <= sw_sec + 1;
+                end else sw_cs <= sw_cs + 1;
+            end
+
+            // Alarm & Button Control
+            if (alarm_ringing) begin
+                if (inc_edge) begin
+                    if (user_answer < 31) user_answer <= user_answer + 1;
+                    else user_answer <= 0;
+                end else if (dec_edge) begin
+                    if (user_answer == (math_A + math_B)) alarm_ringing <= 0;
+                    else user_answer <= 0;
+                end
+            end else if (!alarm_set_sw && !alarm_ringing && H_24 == ALARM_H && M == ALARM_M && S == 0 && tick_1hz) begin
+                alarm_ringing <= 1;
+                math_A <= (lfsr[3:0] % 9) + 1; 
+                math_B <= (lfsr[7:4] % 9) + 1;
+                user_answer <= 0;
+            end else begin
+                // Button Operations
+                if (stopwatch_sw) begin
+                    if (inc_edge) sw_run <= ~sw_run;
+                    else if (dec_edge) begin
+                        if (sw_run) begin
+                            sw_lap <= ~sw_lap;
+                            if (!sw_lap) begin 
+                                lap_min<=sw_min; lap_sec<=sw_sec; lap_cs<=sw_cs; 
+                            end
+                        end else begin
+                            sw_min<=0; sw_sec<=0; sw_cs<=0; sw_lap<=0;
+                        end
+                    end
+                end else if (alarm_set_sw) begin
+                    if (inc_edge || dec_edge) begin
+                         if (set_mode) begin 
+                            if (inc_edge) ALARM_H <= (ALARM_H==23)?0:ALARM_H+1;
+                            else ALARM_H <= (ALARM_H==0)?23:ALARM_H-1;
+                        end else begin 
+                            if (inc_edge) ALARM_M <= (ALARM_M==59)?0:ALARM_M+1;
+                            else ALARM_M <= (ALARM_M==0)?59:ALARM_M-1;
+                        end
+                    end
+                end else begin
+                    // Time Setting
+                    if (inc_edge || dec_edge) begin
+                        S <= 0;
+                        if (set_mode) begin
+                            if (inc_edge) H_24 <= (H_24==23)?0:H_24+1;
+                            else H_24 <= (H_24==0)?23:H_24-1;
+                        end else begin
+                            if (inc_edge) M <= (M==59)?0:M+1;
+                            else M <= (M==0)?59:M-1;
+                        end
+                    end
+                end
+            end
+
+            // Time Counting
+            if (tick_1hz) begin
+                if (S == 59) begin
+                    S <= 0;
+                    minute_changed_pulse <= 1; 
+                    if (M == 59) begin
+                        M <= 0;
+                        if (H_24 == 23) H_24 <= 0; else H_24 <= H_24 + 1;
+                    end else M <= M + 1;
+                end else S <= S + 1;
+            end
+        end
+    end
+
+    // Slot Machine Logic
+    parameter SLOT_DURATION = 75_000_000;
+    parameter SLOT_SPEED_DIV = 50_000_000 / 30; 
+    reg [26:0] slot_timer; reg [20:0] anim_tick_cnt; reg slot_active;
+    reg [3:0] r_H10, r_H01, r_M10, r_M01, r_S10, r_S01;
+
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin slot_timer<=0; slot_active<=0; anim_tick_cnt<=0; end
+        else begin
+            if (minute_changed_pulse && !alarm_set_sw && !alarm_ringing && !stopwatch_sw) begin
+                slot_timer <= SLOT_DURATION; slot_active <= 1;
+            end else if (slot_timer > 0) begin
+                slot_timer <= slot_timer - 1; slot_active <= 1;
+            end else slot_active <= 0;
+
+            if (slot_active) begin
+                if (anim_tick_cnt >= SLOT_SPEED_DIV) begin
+                    anim_tick_cnt <= 0;
+                    r_H10 <= (r_H10 + 1) % 10; r_H01 <= (r_H01 + 1) % 10;
+                    r_M10 <= (r_M10 + 1) % 6;  r_M01 <= (r_M01 + 1) % 10;
+                    r_S10 <= (r_S10 + 1) % 6;  r_S01 <= (r_S01 + 1) % 10;
+                end else anim_tick_cnt <= anim_tick_cnt + 1;
+            end
+        end
+    end
+
+    // Display Output MUX
+    reg [4:0] target_H; 
+    reg [5:0] target_M, target_S;
+    
+    reg [4:0] H_12_int; reg [4:0] display_H;
+    reg [3:0] calc_S_10, calc_S_01, calc_M_10, calc_M_01, calc_H_10, calc_H_01;
+
+    always @(*) begin
+        // Priority 1: Alarm (Math Problem)
+        if (alarm_ringing) begin
+            H_10 = 0; H_01 = math_A;
+            M_10 = 0; M_01 = math_B;
+            S_10 = user_answer / 10; S_01 = user_answer % 10;
+            is_pm = 0;
+        end
+        // Priority 2: Stopwatch
+        else if (stopwatch_sw) begin
+            is_pm = 0;
+            if (sw_lap) begin
+                H_10 = lap_min / 10; H_01 = lap_min % 10;
+                M_10 = lap_sec / 10; M_01 = lap_sec % 10;
+                S_10 = lap_cs / 10;  S_01 = lap_cs % 10;
+            end else begin
+                H_10 = sw_min / 10; H_01 = sw_min % 10;
+                M_10 = sw_sec / 10; M_01 = sw_sec % 10;
+                S_10 = sw_cs / 10;  S_01 = sw_cs % 10;
+            end
+        end
+        // Priority 3: Normal Clock / World Time / Alarm Set
+        else begin
+            if (alarm_set_sw) begin
+                target_H = ALARM_H; target_M = ALARM_M; target_S = 0;
+            end else if (btn_usa) begin 
+                target_H = (H_24>=14)?H_24-14:H_24+10; target_M=M; target_S=S; 
+            end else if (btn_uk) begin 
+                target_H = (H_24>=9)?H_24-9:H_24+15;    target_M=M; target_S=S; 
+            end else if (btn_russia) begin 
+                target_H = (H_24>=6)?H_24-6:H_24+18;   target_M=M; target_S=S; 
+            end else begin
+                target_H = H_24; target_M = M; target_S = S;
+            end
+
+            // BCD Conversion & 12/24H Logic
+            calc_S_10 = target_S / 10; calc_S_01 = target_S % 10;
+            calc_M_10 = target_M / 10; calc_M_01 = target_M % 10;
+
+            if (time_mode) begin 
+                calc_H_10 = target_H / 10; calc_H_01 = target_H % 10; is_pm = 0;
+            end else begin 
+                if (target_H >= 12) begin is_pm = 1; H_12_int = target_H - 12; end
+                else begin is_pm = 0; H_12_int = target_H; end
+                
+                if (H_12_int == 0) display_H = 12; else display_H = H_12_int;
+                
+                calc_H_10 = display_H / 10; calc_H_01 = display_H % 10;
+            end
+
+            // Slot Machine MUX
+            if (slot_active && !alarm_set_sw) begin
+                H_10=r_H10; H_01=r_H01; M_10=r_M10; M_01=r_M01; S_10=r_S10; S_01=r_S01;
+            end else begin
+                H_10=calc_H_10; H_01=calc_H_01; M_10=calc_M_10; M_01=calc_M_01; S_10=calc_S_10; S_01=calc_S_01;
+            end
+        end
+    end
+
+endmodule
